@@ -985,8 +985,7 @@ class PlexProvider(MusicProvider):
         if plex_album.summary:
             audiobook.metadata.description = plex_album.summary
         if plex_album.year:
-            # ruff: noqa: DTZ001
-            audiobook.metadata.release_date = datetime(plex_album.year, 1, 1)
+            audiobook.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             audiobook.metadata.images = UniqueList(
                 [
