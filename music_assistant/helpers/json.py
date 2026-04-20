@@ -7,6 +7,7 @@ from types import MethodType
 from typing import Any, TypeVar
 
 import aiofiles
+import dataclasses
 import orjson
 from mashumaro.mixins.orjson import DataClassORJSONMixin
 
@@ -20,6 +21,8 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     """Parse the value to its serializable equivalent."""
     if getattr(obj, "do_not_serialize", None):
         return None
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
     if (
         isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
         or obj.__class__ == "dict_valueiterator"
