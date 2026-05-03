@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from music_assistant.providers.plex.helpers import (
@@ -17,7 +19,7 @@ class TestPlexSectionInfo:
 
     def test_from_dict_kwargs_reconstruction(self) -> None:
         """PlexSectionInfo can be reconstructed from a dict via **kwargs."""
-        data = {
+        data: dict[str, Any] = {
             "display_name": "My Server / Audiobooks",
             "section_title": "Audiobooks",
             "server_name": "My Server",
@@ -59,6 +61,7 @@ class TestLooksLikeAudiobook:
         """Minimal LibrarySection stub for heuristic unit tests."""
 
         def __init__(self, title: str, locations: list[str] | None = None) -> None:
+            """Initialize fake section."""
             self.title = title
             self.locations = locations or []
 

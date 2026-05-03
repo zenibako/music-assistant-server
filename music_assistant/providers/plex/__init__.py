@@ -67,7 +67,6 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.plex.helpers import (
     discover_local_servers,
     extract_library_name,
-    get_libraries,
     get_section_info,
 )
 
@@ -996,8 +995,7 @@ class PlexProvider(MusicProvider):
         )
         # Author: parentTitle is the album artist; grandparentTitle is the album
         # artist parent (for multi-level nesting in Plex). Some setups vary.
-        author_name = plex_album.parentTitle or plex_album.grandparentTitle
-        if author_name:
+        if author_name := plex_album.parentTitle or plex_album.grandparentTitle:
             audiobook.authors = UniqueList([author_name])
         if plex_album.summary:
             audiobook.metadata.description = plex_album.summary
@@ -1015,38 +1013,38 @@ class PlexProvider(MusicProvider):
                 ]
             )
         # minified path: use album-level duration if Plex exposes it
-        album_duration = getattr(plex_album, "duration", None)
-        if album_duration:
+        if album_duration := getattr(plex_album, "duration", None):
             audiobook.duration = int(album_duration / 1000)
 
         if include_chapters:
-            plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
-            plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
-            chapters: list[MediaItemChapter] = []
-            cumulative = 0.0
-            chapter_idx = 0
-            for plex_track in plex_tracks:
-                # Skip tracks with no playable media to keep chapter offsets
-                # aligned with the stream parts built by _get_audiobook_stream_details.
-                if not plex_track.media or not plex_track.media[0].parts:
-                    continue
-                # plex_track.duration is in milliseconds (Plex native unit)
-                duration_s = (plex_track.duration or 0) / 1000.0
-                chapter_idx += 1
-                chapters.append(
-                    MediaItemChapter(
-                        position=chapter_idx,
-                        name=plex_track.title or f"Chapter {chapter_idx}",
-                        start=cumulative,
-                        end=cumulative + duration_s,
-                    )
-                )
-                cumulative += duration_s
+            chapters = await self._build_audiobook_chapters(plex_album)
             audiobook.metadata.chapters = chapters
-            if cumulative > 0:
-                audiobook.duration = int(cumulative)
+            if chapters and chapters[-1].end is not None:
+                audiobook.duration = int(chapters[-1].end)
 
         return audiobook
+
+    async def _build_audiobook_chapters(self, plex_album: PlexAlbum) -> list[MediaItemChapter]:
+        """Build chapter list from Plex tracks, skipping tracks without playable media."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+        chapters: list[MediaItemChapter] = []
+        cumulative = 0.0
+        for chapter_idx, plex_track in enumerate(plex_tracks, start=1):
+            if not plex_track.media or not plex_track.media[0].parts:
+                continue
+            # plex_track.duration is in milliseconds (Plex native unit)
+            duration_s = (plex_track.duration or 0) / 1000.0
+            chapters.append(
+                MediaItemChapter(
+                    position=chapter_idx,
+                    name=plex_track.title or f"Chapter {chapter_idx}",
+                    start=cumulative,
+                    end=cumulative + duration_s,
+                )
+            )
+            cumulative += duration_s
+        return chapters
 
     @use_cache(3600)  # Cache for 1 hour
     async def search(
@@ -1217,53 +1215,53 @@ class PlexProvider(MusicProvider):
             )
             if not plex_album:
                 raise NotImplementedError
-
-            try:
-                await self._run_async(plex_album.reload)
-            except (plexapi.exceptions.PlexApiException, requests.exceptions.RequestException):
-                self.logger.warning(
-                    "Failed to reload audiobook metadata for position check (%s), "
-                    "using cached metadata",
-                    item_id,
-                )
-
-            fully_played = bool(getattr(plex_album, "viewCount", 0) > 0)
-            timestamp = getattr(plex_album, "lastViewedAt", None)
-            if timestamp is not None and timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=UTC)
-
-            plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
-            plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
-
-            # Calculate resume position from per-track viewOffset values.
-            # Per-track durations and viewOffset are in milliseconds (Plex native).
-            resume_position_ms = 0
-            cumulative_ms = 0
-            for plex_track in plex_tracks:
-                # viewOffset is in milliseconds (Plex native unit)
-                track_offset = getattr(plex_track, "viewOffset", 0) or 0
-                if track_offset > 0:
-                    # Use the last non-zero offset — for sequential listening this
-                    # is the final playback position; it also handles non-linear
-                    # skipping better than first-match
-                    resume_position_ms = cumulative_ms + track_offset
-                # duration is in milliseconds (Plex native unit)
-                track_duration = getattr(plex_track, "duration", 0) or 0
-                cumulative_ms += track_duration
-
-            if resume_position_ms == 0 and fully_played:
-                # album-level duration is also in milliseconds
-                album_duration = getattr(plex_album, "duration", 0) or 0
-                resume_position_ms = int(album_duration)
-
-            return fully_played, resume_position_ms, timestamp
         except Exception:
             self.logger.warning(
-                "Failed to get resume position for audiobook %s",
+                "Failed to fetch audiobook %s for resume position",
                 item_id,
                 exc_info=True,
             )
             raise NotImplementedError
+
+        try:
+            await self._run_async(plex_album.reload)
+        except (plexapi.exceptions.PlexApiException, requests.exceptions.RequestException):
+            self.logger.warning(
+                "Failed to reload audiobook metadata for position check (%s), "
+                "using cached metadata",
+                item_id,
+            )
+
+        fully_played = bool(getattr(plex_album, "viewCount", 0) > 0)
+        timestamp = getattr(plex_album, "lastViewedAt", None)
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+
+        resume_position_ms = await self._calc_resume_position_ms(plex_album, fully_played)
+        return fully_played, resume_position_ms, timestamp
+
+    async def _calc_resume_position_ms(self, plex_album: PlexAlbum, fully_played: bool) -> int:
+        """Calculate resume position from per-track viewOffset values."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+
+        # Per-track durations and viewOffset are in milliseconds (Plex native).
+        resume_position_ms = 0
+        cumulative_ms = 0
+        for plex_track in plex_tracks:
+            track_offset = getattr(plex_track, "viewOffset", 0) or 0
+            if track_offset > 0:
+                # Use the last non-zero offset — for sequential listening this
+                # is the final playback position; it also handles non-linear
+                # skipping better than first-match.
+                resume_position_ms = cumulative_ms + track_offset
+            cumulative_ms += getattr(plex_track, "duration", 0) or 0
+
+        if resume_position_ms == 0 and fully_played:
+            album_duration = getattr(plex_album, "duration", 0) or 0
+            resume_position_ms = int(album_duration)
+
+        return resume_position_ms
 
     async def on_played(
         self,
@@ -1296,42 +1294,28 @@ class PlexProvider(MusicProvider):
             )
             if not plex_album:
                 return
+        except Exception:
+            self.logger.warning(
+                "Failed to fetch audiobook %s for played sync",
+                prov_item_id,
+                exc_info=True,
+            )
+            return
 
-            if fully_played:
-                await self._run_async(plex_album.markPlayed)
-                self.logger.debug("Marked audiobook %s as played in Plex", prov_item_id)
-                return
+        if fully_played:
+            await self._run_async(plex_album.markPlayed)
+            self.logger.debug("Marked audiobook %s as played in Plex", prov_item_id)
+            return
 
-            if position <= 0:
-                await self._run_async(plex_album.markUnplayed)
-                self.logger.debug("Marked audiobook %s as unplayed in Plex", prov_item_id)
-                return
+        if position <= 0:
+            await self._run_async(plex_album.markUnplayed)
+            self.logger.debug("Marked audiobook %s as unplayed in Plex", prov_item_id)
+            return
 
-            plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
-            plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
-
-            # Convert position from seconds (MA) to milliseconds (Plex)
-            position_ms = position * 1000
-            cumulative_ms = 0
-            target_track = None
-            target_offset_ms = 0
-
-            for plex_track in plex_tracks:
-                # plex_track.duration is in milliseconds (Plex native unit)
-                track_duration = getattr(plex_track, "duration", 0) or 0
-                if cumulative_ms + track_duration > position_ms:
-                    target_track = plex_track
-                    target_offset_ms = position_ms - cumulative_ms
-                    break
-                cumulative_ms += track_duration
-
-            if target_track is None and plex_tracks:
-                target_track = plex_tracks[-1]
-                target_offset_ms = position_ms - cumulative_ms
-                # duration is in milliseconds; clamp offset to track duration
-                track_duration = getattr(target_track, "duration", 0) or 0
-                target_offset_ms = min(target_offset_ms, track_duration)
-
+        try:
+            target_track, target_offset_ms = await self._find_track_for_position(
+                plex_album, position
+            )
             if target_track is None:
                 return
 
@@ -1341,7 +1325,6 @@ class PlexProvider(MusicProvider):
                 target_track.updateTimeline,
                 target_offset_ms,
                 state=state,
-                # duration is in milliseconds (Plex native unit)
                 duration=getattr(target_track, "duration", None),
             )
             self.logger.debug(
@@ -1357,6 +1340,29 @@ class PlexProvider(MusicProvider):
                 prov_item_id,
                 exc_info=True,
             )
+
+    async def _find_track_for_position(
+        self, plex_album: PlexAlbum, position: int
+    ) -> tuple[PlexTrack | None, int]:
+        """Find the track and offset (ms) corresponding to the given position (s)."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+
+        position_ms = position * 1000
+        cumulative_ms = 0
+        for plex_track in plex_tracks:
+            track_duration = getattr(plex_track, "duration", 0) or 0
+            if cumulative_ms + track_duration > position_ms:
+                return plex_track, position_ms - cumulative_ms
+            cumulative_ms += track_duration
+
+        if plex_tracks:
+            # Position is past all tracks — clamp to last track.
+            last_track = plex_tracks[-1]
+            last_duration = getattr(last_track, "duration", 0) or 0
+            return last_track, min(position_ms - cumulative_ms, last_duration)
+
+        return None, 0
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album(self, prov_album_id: str) -> Album:
@@ -1643,45 +1649,9 @@ class PlexProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
-        # ordering must match the chapter ordering in _parse_audiobook
         plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
 
-        parts: list[MultiPartPath] = []
-        total_duration = 0.0
-        first_container: str | None = None
-        for plex_track in plex_tracks:
-            if not plex_track.media:
-                self.logger.debug(
-                    "Skipping track '%s' (key=%s) in audiobook %s: no media",
-                    plex_track.title,
-                    plex_track.key,
-                    item_id,
-                )
-                continue
-            media: PlexMedia = plex_track.media[0]
-            if not media.parts:
-                self.logger.debug(
-                    "Skipping track '%s' (key=%s) in audiobook %s: media has no parts",
-                    plex_track.title,
-                    plex_track.key,
-                    item_id,
-                )
-                continue
-            if first_container is None and media.container:
-                first_container = media.container
-            media_part: PlexMediaPart = media.parts[0]
-            url = self._plex_server.url(f"{media_part.key}?download=1", True)
-            duration_s = (plex_track.duration or 0) / 1000.0
-            parts.append(MultiPartPath(path=url, duration=duration_s))
-            total_duration += duration_s
-            self.logger.debug(
-                "Added audiobook part: track '%s' (%s) duration=%.1fs url=%s",
-                plex_track.title,
-                plex_track.key,
-                duration_s,
-                url,
-            )
-
+        parts, total_duration, first_container = self._build_stream_parts(plex_tracks, item_id)
         if not parts:
             self.logger.error(
                 "Audiobook %s (%s) has no playable parts (%d tracks checked)",
@@ -1714,6 +1684,54 @@ class PlexProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    def _build_stream_parts(
+        self, plex_tracks: list[PlexTrack], item_id: str
+    ) -> tuple[list[MultiPartPath], float, str | None]:
+        """Convert Plex tracks to MultiPartPath entries for streaming."""
+        parts: list[MultiPartPath] = []
+        total_duration = 0.0
+        first_container: str | None = None
+        for plex_track in plex_tracks:
+            media = self._track_media_or_log(plex_track, item_id)
+            if media is None:
+                continue
+            if first_container is None and media.container:
+                first_container = media.container
+            media_part: PlexMediaPart = media.parts[0]
+            url = self._plex_server.url(f"{media_part.key}?download=1", True)
+            duration_s = (plex_track.duration or 0) / 1000.0
+            parts.append(MultiPartPath(path=url, duration=duration_s))
+            total_duration += duration_s
+            self.logger.debug(
+                "Added audiobook part: track '%s' (%s) duration=%.1fs url=%s",
+                plex_track.title,
+                plex_track.key,
+                duration_s,
+                url,
+            )
+        return parts, total_duration, first_container
+
+    def _track_media_or_log(self, plex_track: PlexTrack, item_id: str) -> PlexMedia | None:
+        """Return the first PlexMedia for a track, or log and return None if unavailable."""
+        if not plex_track.media:
+            self.logger.debug(
+                "Skipping track '%s' (key=%s) in audiobook %s: no media",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return None
+        media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            self.logger.debug(
+                "Skipping track '%s' (key=%s) in audiobook %s: media has no parts",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return None
+        return media
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track."""
