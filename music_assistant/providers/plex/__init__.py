@@ -346,6 +346,7 @@ async def get_config_entries(  # noqa: PLR0915
                 ConfigValueOption(title="(none)", value=""),
                 *library_options,
             ]
+
             # Auto-detect audiobook library and enable toggle if found.
             audiobook_sections = [s for s in sections if s.is_likely_audiobook]
             if audiobook_sections:
@@ -353,6 +354,7 @@ async def get_config_entries(  # noqa: PLR0915
                 conf_enable_audiobooks.value = True
                 conf_audiobook_library.default_value = audiobook_sections[0].display_name
                 conf_audiobook_library.value = audiobook_sections[0].display_name
+
         entries.append(conf_libraries)
         entries.append(conf_enable_audiobooks)
         entries.append(conf_audiobook_library)
