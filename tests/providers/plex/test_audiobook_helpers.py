@@ -6,9 +6,28 @@ import pytest
 
 from music_assistant.providers.plex.helpers import (
     AUDIOBOOK_KEYWORDS,
+    PlexSectionInfo,
     _looks_like_audiobook,
     extract_library_name,
 )
+
+
+class TestPlexSectionInfo:
+    """Tests for PlexSectionInfo dataclass."""
+
+    def test_from_dict_kwargs_reconstruction(self) -> None:
+        """PlexSectionInfo can be reconstructed from a dict via **kwargs."""
+        data = {
+            "display_name": "My Server / Audiobooks",
+            "section_title": "Audiobooks",
+            "server_name": "My Server",
+            "section_type": "artist",
+            "is_likely_audiobook": True,
+        }
+        info = PlexSectionInfo(**data)
+        assert info.display_name == "My Server / Audiobooks"
+        assert info.section_title == "Audiobooks"
+        assert info.is_likely_audiobook is True
 
 
 class TestExtractLibraryName:

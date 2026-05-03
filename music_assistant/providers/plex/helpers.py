@@ -180,6 +180,10 @@ async def get_section_info(
     if cache := await mass.cache.get(
         cache_key, checksum=auth_token, provider=instance_id or local_server_ip
     ):
+        if isinstance(cache, list) and cache:
+            first_item = cache[0]
+            if isinstance(first_item, dict):
+                return [PlexSectionInfo(**item) for item in cache]
         return cast("list[PlexSectionInfo]", cache)
 
     result = await asyncio.to_thread(_get_section_info)
