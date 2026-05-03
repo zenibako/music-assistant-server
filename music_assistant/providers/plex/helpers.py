@@ -145,7 +145,7 @@ async def get_section_info(
     :param local_server_verify_cert: Whether to verify SSL certificate.
     :param instance_id: Provider instance ID to use for cache isolation.
     """
-    cache_key = "plex_section_info"
+    cache_key = "plex_section_info_v2"
 
     def _get_section_info() -> list[PlexSectionInfo]:
         session = requests.Session()
