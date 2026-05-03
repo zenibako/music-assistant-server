@@ -118,7 +118,10 @@ class TestAudiobookKeywords:
 
     def test_all_lowercase(self) -> None:
         """All keywords must be lowercase for case-insensitive matching."""
-        assert all(kw.islower() for kw in AUDIOBOOK_KEYWORDS)
+        assert all(
+            kw.islower() or not any(c.isupper() or c.islower() for c in kw)
+            for kw in AUDIOBOOK_KEYWORDS
+        )
 
     def test_non_empty(self) -> None:
         """At least one keyword is defined."""

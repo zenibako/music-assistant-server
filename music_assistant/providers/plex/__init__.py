@@ -621,7 +621,11 @@ class PlexProvider(MusicProvider):
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def _get_data(self, key: str, cls: type[PlexObjectT]) -> PlexObjectT:
-        results = await self._run_async(self._plex_library.fetchItem, key, cls)
+        try:
+            results = await self._run_async(self._plex_library.fetchItem, key, cls)
+        except plexapi.exceptions.NotFound as err:
+            msg = f"Item {key} not found"
+            raise MediaNotFoundError(msg) from err
         return cast("PlexObjectT", results)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -1189,11 +1193,12 @@ class PlexProvider(MusicProvider):
             msg = "Audiobook library not configured"
             raise MediaNotFoundError(msg)
         album_key = prov_audiobook_id.removeprefix("audiobook:")
-        plex_album = cast(
-            "PlexAlbum | None",
-            await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
-        )
-        if not plex_album:
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
             msg = f"Audiobook {prov_audiobook_id} not found"
             raise MediaNotFoundError(msg)
         return await self._parse_audiobook(plex_album, include_chapters=True)
@@ -1212,18 +1217,12 @@ class PlexProvider(MusicProvider):
         album_key = item_id.removeprefix("audiobook:")
         try:
             plex_album = cast(
-                "PlexAlbum | None",
+                "PlexAlbum",
                 await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
             )
-            if not plex_album:
-                raise NotImplementedError
-        except Exception:
-            self.logger.warning(
-                "Failed to fetch audiobook %s for resume position",
-                item_id,
-                exc_info=True,
-            )
-            raise NotImplementedError
+        except plexapi.exceptions.NotFound:
+            msg = f"Audiobook {item_id} not found"
+            raise MediaNotFoundError(msg)
 
         try:
             await self._run_async(plex_album.reload)
@@ -1291,11 +1290,15 @@ class PlexProvider(MusicProvider):
         try:
             album_key = prov_item_id.removeprefix("audiobook:")
             plex_album = cast(
-                "PlexAlbum | None",
+                "PlexAlbum",
                 await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
             )
-            if not plex_album:
-                return
+        except plexapi.exceptions.NotFound:
+            self.logger.warning(
+                "Failed to fetch audiobook %s for played sync",
+                prov_item_id,
+            )
+            return
         except Exception:
             self.logger.warning(
                 "Failed to fetch audiobook %s for played sync",
@@ -1359,20 +1362,18 @@ class PlexProvider(MusicProvider):
             cumulative_ms += track_duration
 
         if plex_tracks:
-            # Position is past all tracks — clamp to last track.
+            # Position is past all tracks — clamp to end of the last track.
             last_track = plex_tracks[-1]
             last_duration = getattr(last_track, "duration", 0) or 0
-            return last_track, min(position_ms - cumulative_ms, last_duration)
+            return last_track, last_duration
 
         return None, 0
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if plex_album := await self._get_data(prov_album_id, PlexAlbum):
-            return await self._parse_album(plex_album)
-        msg = f"Item {prov_album_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_album = await self._get_data(prov_album_id, PlexAlbum)
+        return await self._parse_album(plex_album)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -1399,18 +1400,14 @@ class PlexProvider(MusicProvider):
             msg = f"Artist not found: {prov_artist_id}"
             raise MediaNotFoundError(msg)
 
-        if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
-            return await self._parse_artist(plex_artist)
-        msg = f"Item {prov_artist_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
+        return await self._parse_artist(plex_artist)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if plex_track := await self._get_data(prov_track_id, PlexTrack):
-            return await self._parse_track(plex_track)
-        msg = f"Item {prov_track_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_track = await self._get_data(prov_track_id, PlexTrack)
+        return await self._parse_track(plex_track)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -1420,17 +1417,17 @@ class PlexProvider(MusicProvider):
             # Extract the collection key
             collection_key = prov_playlist_id.replace("collection:", "")
             # Fetch the collection
-            if plex_collection := await self._run_async(
-                self._plex_library.fetchItem, collection_key
-            ):
-                return await self._parse_collection(plex_collection)
-            msg = f"Collection {prov_playlist_id} not found"
-            raise MediaNotFoundError(msg)
+            try:
+                plex_collection = await self._run_async(
+                    self._plex_library.fetchItem, collection_key
+                )
+            except plexapi.exceptions.NotFound:
+                msg = f"Collection {prov_playlist_id} not found"
+                raise MediaNotFoundError(msg)
+            return await self._parse_collection(plex_collection)
 
-        if plex_playlist := await self._get_data(prov_playlist_id, PlexPlaylist):
-            return await self._parse_playlist(plex_playlist)
-        msg = f"Item {prov_playlist_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
+        return await self._parse_playlist(plex_playlist)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -1445,8 +1442,11 @@ class PlexProvider(MusicProvider):
             # Extract the collection key
             collection_key = prov_playlist_id.replace("collection:", "")
             # Fetch the collection
-            plex_collection = await self._run_async(self._plex_library.fetchItem, collection_key)
-            if not plex_collection:
+            try:
+                plex_collection = await self._run_async(
+                    self._plex_library.fetchItem, collection_key
+                )
+            except plexapi.exceptions.NotFound:
                 msg = f"Collection {prov_playlist_id} not found"
                 raise MediaNotFoundError(msg)
             if not (collection_items := await self._run_async(plex_collection.items)):
@@ -1642,11 +1642,12 @@ class PlexProvider(MusicProvider):
             msg = "Audiobook library not configured"
             raise MediaNotFoundError(msg)
         album_key = item_id.removeprefix("audiobook:")
-        plex_album = cast(
-            "PlexAlbum | None",
-            await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
-        )
-        if not plex_album:
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_audiobook_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
             msg = f"Audiobook {item_id} not found"
             raise MediaNotFoundError(msg)
 
