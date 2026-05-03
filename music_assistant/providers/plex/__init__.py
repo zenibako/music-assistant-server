@@ -64,7 +64,12 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.plex.helpers import discover_local_servers, get_libraries
+from music_assistant.providers.plex.helpers import (
+    discover_local_servers,
+    extract_library_name,
+    get_libraries,
+    get_section_info,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -314,36 +319,41 @@ async def get_config_entries(  # noqa: PLR0915
             server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT))
             server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
             server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
-            if not (
-                libraries := await get_libraries(
-                    mass,
-                    token,
-                    server_http_ssl,
-                    server_http_ip,
-                    server_http_port,
-                    server_http_verify_cert,
-                    instance_id,
-                )
-            ):
+            sections = await get_section_info(
+                mass,
+                token,
+                server_http_ssl,
+                server_http_ip,
+                server_http_port,
+                server_http_verify_cert,
+                instance_id,
+            )
+            if not sections:
                 msg = "Unable to retrieve Servers and/or Music Libraries"
                 raise LoginFailed(msg)
             library_options = [
-                # use the same value for both the value and the title
-                # until we find out what plex uses as stable identifiers
-                ConfigValueOption(
-                    title=x,
-                    value=x,
-                )
-                for x in libraries
+                ConfigValueOption(title=s.display_name, value=s.display_name) for s in sections
             ]
             conf_libraries.options = library_options
-            # select first library as (default) value
-            conf_libraries.default_value = libraries[0]
-            conf_libraries.value = libraries[0]
+            # Auto-select the best music library candidate:
+            # prefer the first section NOT flagged as a likely audiobook library.
+            music_sections = [s for s in sections if not s.is_likely_audiobook]
+            default_library = (
+                music_sections[0].display_name if music_sections else sections[0].display_name
+            )
+            conf_libraries.default_value = default_library
+            conf_libraries.value = default_library
             conf_audiobook_library.options = [
                 ConfigValueOption(title="(none)", value=""),
                 *library_options,
             ]
+            # Auto-detect audiobook library and enable toggle if found.
+            audiobook_sections = [s for s in sections if s.is_likely_audiobook]
+            if audiobook_sections:
+                conf_enable_audiobooks.default_value = True
+                conf_enable_audiobooks.value = True
+                conf_audiobook_library.default_value = audiobook_sections[0].display_name
+                conf_audiobook_library.value = audiobook_sections[0].display_name
         entries.append(conf_libraries)
         entries.append(conf_enable_audiobooks)
         entries.append(conf_audiobook_library)
@@ -480,7 +490,8 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
+
+        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID)))
 
         def connect() -> PlexServer:
             try:
@@ -553,24 +564,25 @@ class PlexProvider(MusicProvider):
         # Optional audiobook library (music-type section treated as audiobooks)
         audiobook_library_conf = self.config.get_value(CONF_AUDIOBOOK_LIBRARY_ID)
         if audiobook_library_conf:
-            _, audiobook_library_name = str(audiobook_library_conf).split(" / ", 1)
+            audiobook_library_name = extract_library_name(str(audiobook_library_conf))
             if audiobook_library_name == library_name:
-                self.logger.warning(
-                    "Audiobook library is set to the same Plex section as the music "
-                    "library (%s); audiobook items will duplicate music entries.",
+                self.logger.error(
+                    "Audiobook library must be different from the music "
+                    "library (%s); audiobook support disabled for this instance.",
                     library_name,
                 )
-            try:
-                self._plex_audiobook_library = await self._run_async(
-                    self._plex_server.library.section, audiobook_library_name
-                )
-            except plexapi.exceptions.NotFound:
-                self.logger.warning(
-                    "Configured Plex audiobook library '%s' not found; "
-                    "audiobook support disabled for this instance.",
-                    audiobook_library_name,
-                )
-                self._plex_audiobook_library = None
+            else:
+                try:
+                    self._plex_audiobook_library = await self._run_async(
+                        self._plex_server.library.section, audiobook_library_name
+                    )
+                except plexapi.exceptions.NotFound:
+                    self.logger.warning(
+                        "Configured Plex audiobook library '%s' not found; "
+                        "audiobook support disabled for this instance.",
+                        audiobook_library_name,
+                    )
+                    self._plex_audiobook_library = None
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -591,7 +603,9 @@ class PlexProvider(MusicProvider):
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         features = set(self._supported_features)
-        if self.config.get_value(CONF_AUDIOBOOK_LIBRARY_ID):
+        # Check both the toggle and the loaded library object to handle cases
+        # where the library ID is stale (toggle was turned off later).
+        if self.config.get_value(CONF_ENABLE_AUDIOBOOKS) and self._plex_audiobook_library:
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
         return features
 
@@ -980,8 +994,11 @@ class PlexProvider(MusicProvider):
                 )
             },
         )
-        if plex_album.parentTitle:
-            audiobook.authors = UniqueList([plex_album.parentTitle])
+        # Author: parentTitle is the album artist; grandparentTitle is the album
+        # artist parent (for multi-level nesting in Plex). Some setups vary.
+        author_name = plex_album.parentTitle or plex_album.grandparentTitle
+        if author_name:
+            audiobook.authors = UniqueList([author_name])
         if plex_album.summary:
             audiobook.metadata.description = plex_album.summary
         if plex_album.year:
@@ -1007,12 +1024,19 @@ class PlexProvider(MusicProvider):
             plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
             chapters: list[MediaItemChapter] = []
             cumulative = 0.0
-            for idx, plex_track in enumerate(plex_tracks, 1):
+            chapter_idx = 0
+            for plex_track in plex_tracks:
+                # Skip tracks with no playable media to keep chapter offsets
+                # aligned with the stream parts built by _get_audiobook_stream_details.
+                if not plex_track.media or not plex_track.media[0].parts:
+                    continue
+                # plex_track.duration is in milliseconds (Plex native unit)
                 duration_s = (plex_track.duration or 0) / 1000.0
+                chapter_idx += 1
                 chapters.append(
                     MediaItemChapter(
-                        position=idx,
-                        name=plex_track.title or f"Chapter {idx}",
+                        position=chapter_idx,
+                        name=plex_track.title or f"Chapter {chapter_idx}",
                         start=cumulative,
                         end=cumulative + duration_s,
                     )
@@ -1135,10 +1159,28 @@ class PlexProvider(MusicProvider):
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Retrieve all library audiobooks from the configured Plex audiobook section."""
         if self._plex_audiobook_library is None:
+            self.logger.debug("Audiobook library is None; no audiobooks to yield")
             return
-        albums_obj = await self._run_async(self._plex_audiobook_library.albums)
+        try:
+            albums_obj = await self._run_async(self._plex_audiobook_library.albums)
+        except Exception:
+            self.logger.exception("Failed to list albums from audiobook library")
+            return
+        self.logger.debug(
+            "Found %d albums in audiobook library '%s'",
+            len(albums_obj),
+            self._plex_audiobook_library.title,
+        )
         for album in albums_obj:
-            yield await self._parse_audiobook(album, include_chapters=False)
+            try:
+                yield await self._parse_audiobook(album, include_chapters=False)
+            except Exception:
+                self.logger.warning(
+                    "Failed to parse audiobook album '%s' (key=%s); skipping",
+                    getattr(album, "title", "[unknown]"),
+                    getattr(album, "key", "[no key]"),
+                    exc_info=True,
+                )
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
@@ -1176,7 +1218,14 @@ class PlexProvider(MusicProvider):
             if not plex_album:
                 raise NotImplementedError
 
-            await self._run_async(plex_album.reload)
+            try:
+                await self._run_async(plex_album.reload)
+            except (plexapi.exceptions.PlexApiException, requests.exceptions.RequestException):
+                self.logger.warning(
+                    "Failed to reload audiobook metadata for position check (%s), "
+                    "using cached metadata",
+                    item_id,
+                )
 
             fully_played = bool(getattr(plex_album, "viewCount", 0) > 0)
             timestamp = getattr(plex_album, "lastViewedAt", None)
@@ -1186,17 +1235,24 @@ class PlexProvider(MusicProvider):
             plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
             plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
 
+            # Calculate resume position from per-track viewOffset values.
+            # Per-track durations and viewOffset are in milliseconds (Plex native).
             resume_position_ms = 0
             cumulative_ms = 0
             for plex_track in plex_tracks:
+                # viewOffset is in milliseconds (Plex native unit)
                 track_offset = getattr(plex_track, "viewOffset", 0) or 0
                 if track_offset > 0:
+                    # Use the last non-zero offset — for sequential listening this
+                    # is the final playback position; it also handles non-linear
+                    # skipping better than first-match
                     resume_position_ms = cumulative_ms + track_offset
-                    break
+                # duration is in milliseconds (Plex native unit)
                 track_duration = getattr(plex_track, "duration", 0) or 0
                 cumulative_ms += track_duration
 
             if resume_position_ms == 0 and fully_played:
+                # album-level duration is also in milliseconds
                 album_duration = getattr(plex_album, "duration", 0) or 0
                 resume_position_ms = int(album_duration)
 
@@ -1254,12 +1310,14 @@ class PlexProvider(MusicProvider):
             plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
             plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
 
+            # Convert position from seconds (MA) to milliseconds (Plex)
             position_ms = position * 1000
             cumulative_ms = 0
             target_track = None
             target_offset_ms = 0
 
             for plex_track in plex_tracks:
+                # plex_track.duration is in milliseconds (Plex native unit)
                 track_duration = getattr(plex_track, "duration", 0) or 0
                 if cumulative_ms + track_duration > position_ms:
                     target_track = plex_track
@@ -1270,6 +1328,7 @@ class PlexProvider(MusicProvider):
             if target_track is None and plex_tracks:
                 target_track = plex_tracks[-1]
                 target_offset_ms = position_ms - cumulative_ms
+                # duration is in milliseconds; clamp offset to track duration
                 track_duration = getattr(target_track, "duration", 0) or 0
                 target_offset_ms = min(target_offset_ms, track_duration)
 
@@ -1277,10 +1336,12 @@ class PlexProvider(MusicProvider):
                 return
 
             state = "playing" if is_playing else "paused"
+            # updateTimeline expects time in milliseconds (Plex native unit)
             await self._run_async(
                 target_track.updateTimeline,
                 target_offset_ms,
                 state=state,
+                # duration is in milliseconds (Plex native unit)
                 duration=getattr(target_track, "duration", None),
             )
             self.logger.debug(
@@ -1590,9 +1651,21 @@ class PlexProvider(MusicProvider):
         first_container: str | None = None
         for plex_track in plex_tracks:
             if not plex_track.media:
+                self.logger.debug(
+                    "Skipping track '%s' (key=%s) in audiobook %s: no media",
+                    plex_track.title,
+                    plex_track.key,
+                    item_id,
+                )
                 continue
             media: PlexMedia = plex_track.media[0]
             if not media.parts:
+                self.logger.debug(
+                    "Skipping track '%s' (key=%s) in audiobook %s: media has no parts",
+                    plex_track.title,
+                    plex_track.key,
+                    item_id,
+                )
                 continue
             if first_container is None and media.container:
                 first_container = media.container
@@ -1601,10 +1674,30 @@ class PlexProvider(MusicProvider):
             duration_s = (plex_track.duration or 0) / 1000.0
             parts.append(MultiPartPath(path=url, duration=duration_s))
             total_duration += duration_s
+            self.logger.debug(
+                "Added audiobook part: track '%s' (%s) duration=%.1fs url=%s",
+                plex_track.title,
+                plex_track.key,
+                duration_s,
+                url,
+            )
 
         if not parts:
+            self.logger.error(
+                "Audiobook %s (%s) has no playable parts (%d tracks checked)",
+                item_id,
+                plex_album.title,
+                len(plex_tracks),
+            )
             msg = f"Audiobook {item_id} has no playable parts"
             raise MediaNotFoundError(msg)
+
+        self.logger.debug(
+            "Built StreamDetails for audiobook %s with %d parts, total_duration=%.1fs",
+            item_id,
+            len(parts),
+            total_duration,
+        )
 
         content_type = (
             ContentType.try_parse(first_container) if first_container else ContentType.UNKNOWN

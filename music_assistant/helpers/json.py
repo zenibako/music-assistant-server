@@ -2,12 +2,12 @@
 
 import asyncio
 import base64
+import dataclasses
 from _collections_abc import dict_keys, dict_values
 from types import MethodType
 from typing import Any, TypeVar
 
 import aiofiles
-import dataclasses
 import orjson
 from mashumaro.mixins.orjson import DataClassORJSONMixin
 
@@ -21,6 +21,10 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     """Parse the value to its serializable equivalent."""
     if getattr(obj, "do_not_serialize", None):
         return None
+    # Prefer to_dict (mashumaro) over dataclasses.asdict — the latter
+    # chokes on nested UniqueList fields that contain dict values.
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
     if (
@@ -28,8 +32,6 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
         or obj.__class__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]
-    if hasattr(obj, "to_dict"):
-        return obj.to_dict()
     if isinstance(obj, bytes):
         return base64.b64encode(obj).decode("ascii")
     if isinstance(obj, DO_NOT_SERIALIZE_TYPES):
