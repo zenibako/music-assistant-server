@@ -21,6 +21,7 @@ venv/
 uv.lock
 /.claude/worktrees
 docs/superpowers
+.playwright-mcp/
 
 # Devenv
 .devenv*
