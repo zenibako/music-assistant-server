@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 
 import pytest
+from music_assistant_models.media_items import Audiobook, ProviderMapping
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.json import get_serializable_value, json_dumps
 
@@ -46,10 +48,6 @@ class TestDataclassSerialization:
 
     def test_dataclass_with_to_dict_preferred(self) -> None:
         """Dataclasses that also have to_dict() must use to_dict, not asdict."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
-
         audiobook = Audiobook(
             item_id="audiobook:123",
             provider="plex",
@@ -68,8 +66,7 @@ class TestDataclassSerialization:
         assert '"name":"Test Book"' in result
 
     def test_plain_dataclass_with_uniquelist_of_strings(self) -> None:
-        """asdict on plain dataclass with UniqueList[str] works (strings are hashable)."""
-        from music_assistant_models.unique_list import UniqueList
+        """Asdict on plain dataclass with UniqueList[str] works (strings are hashable)."""
 
         @dataclass
         class Container:
@@ -81,9 +78,6 @@ class TestDataclassSerialization:
 
     def test_nested_dataclass_mixed_to_dict(self) -> None:
         """Outer plain dataclass wrapping inner mashumaro dataclass."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
 
         @dataclass
         class Wrapper:
@@ -116,10 +110,6 @@ class TestGetSerializableValue:
 
     def test_to_dict_takes_precedence_over_asdict(self) -> None:
         """If both dataclass and to_dict, to_dict must win."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
-
         audiobook = Audiobook(
             item_id="test",
             provider="plex",
@@ -150,10 +140,6 @@ class TestGetSerializableValue:
 
     def test_collection_of_dataclasses_with_to_dict(self) -> None:
         """Lists containing mashumaro dataclasses must serialize."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
-
         books = [
             Audiobook(
                 item_id=f"audiobook:{i}",
@@ -185,10 +171,6 @@ class TestEdgeCases:
 
     def test_empty_audiobook_serializes(self) -> None:
         """Audiobook with minimal fields must serialize."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
-
         book = Audiobook(
             item_id="audiobook:minimal",
             provider="plex",
@@ -211,10 +193,6 @@ class TestJsonDumpsCachingRegression:
 
     def test_cached_audiobook_list_serializes(self) -> None:
         """Simulate cache.set with list of Audiobooks (the real crash scenario)."""
-        from music_assistant_models.media_items import Audiobook
-        from music_assistant_models.media_items import ProviderMapping
-        from music_assistant_models.unique_list import UniqueList
-
         books = [
             Audiobook(
                 item_id="audiobook:cached",
