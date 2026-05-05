@@ -1742,8 +1742,8 @@ class PlexProvider(MusicProvider):
             return await self._get_audiobook_stream_details(item_id)
 
         plex_track = await self._get_data(item_id, PlexTrack)
-        if not plex_track or not plex_track.media:
-            msg = f"track {item_id} not found"
+        if not plex_track.media:
+            msg = f"track {item_id} has no media"
             raise MediaNotFoundError(msg)
 
         media: PlexMedia = plex_track.media[0]

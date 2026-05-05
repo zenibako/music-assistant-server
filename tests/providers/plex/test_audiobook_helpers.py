@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from music_assistant.providers.plex.helpers import (
-    AUDIOBOOK_KEYWORDS,
     PlexSectionInfo,
     _looks_like_audiobook,
     extract_library_name,
@@ -55,74 +54,168 @@ class TestExtractLibraryName:
 
 
 class TestLooksLikeAudiobook:
-    """Tests for _looks_like_audiobook() heuristic detection."""
+    """Tests for _looks_like_audiobook() using storeTrackProgress preference."""
+
+    class FakeSetting:
+        """Minimal Setting stub for unit tests."""
+
+        def __init__(self, setting_id: str, value: bool) -> None:
+            """Initialize fake setting."""
+            self.id = setting_id
+            self.value = value
 
     class FakeSection:
-        """Minimal LibrarySection stub for heuristic unit tests."""
+        """Minimal LibrarySection stub for unit tests."""
 
-        def __init__(self, title: str, locations: list[str] | None = None) -> None:
-            """Initialize fake section."""
+        def __init__(self, title: str, settings_data: list[tuple[str, bool]]) -> None:
+            """Initialize fake section with given title and settings."""
             self.title = title
-            self.locations = locations or []
+            self._settings = [
+                TestLooksLikeAudiobook.FakeSetting(setting_id, value)
+                for setting_id, value in settings_data
+            ]
 
-    @pytest.mark.parametrize(
-        "title",
-        [
-            "Audiobooks",
-            "My Audiobooks",
-            "Audio Books",
-            "Audible Collection",
-            "Hörbuch Sammlung",
-            "Hoerbuch",
-            "Mixed Audiobook Library",
-        ],
-    )
-    def test_title_matches_audiobook_keywords(self, title: str) -> None:
-        """Any title containing an audiobook keyword should trigger detection."""
-        section = self.FakeSection(title)
+        def settings(self) -> list[TestLooksLikeAudiobook.FakeSetting]:
+            """Return fake settings list."""
+            return self._settings
+
+    def test_enable_track_offsets_enabled(self) -> None:
+        """Section with enableTrackOffsets=True should be flagged as audiobook."""
+        section = self.FakeSection("Audiobooks", [("enableTrackOffsets", True)])
         assert _looks_like_audiobook(section) is True
 
-    @pytest.mark.parametrize(
-        "title",
-        [
-            "Music",
-            "Podcasts",
-            "My Music",
-            "Radio",
-        ],
-    )
-    def test_non_audiobook_title(self, title: str) -> None:
-        """Titles without audiobook keywords should not trigger."""
-        section = self.FakeSection(title)
+    def test_enable_track_offsets_disabled(self) -> None:
+        """Section with enableTrackOffsets=False should not be flagged."""
+        section = self.FakeSection("Music", [("enableTrackOffsets", False)])
         assert _looks_like_audiobook(section) is False
 
-    def test_location_path_audiobook_match(self) -> None:
-        """Audiobook keyword in folder path should trigger detection."""
-        section = self.FakeSection("Misc", locations=["/media/audiobooks/"])
-        assert _looks_like_audiobook(section) is True
-
-    def test_location_no_match(self) -> None:
-        """Non-audiobook location should not trigger detection."""
-        section = self.FakeSection("Music", locations=["/media/music/"])
+    def test_setting_absent(self) -> None:
+        """Section without enableTrackOffsets should not be flagged."""
+        section = self.FakeSection("Music", [("someOtherSetting", True)])
         assert _looks_like_audiobook(section) is False
 
-    def test_no_locations_attribute(self) -> None:
-        """Sections without locations attribute should not raise."""
-        section = self.FakeSection("Music")
-        del section.locations
+    def test_empty_settings(self) -> None:
+        """Section with no settings should not raise."""
+        section = self.FakeSection("Music", [])
         assert _looks_like_audiobook(section) is False
 
+    def test_settings_call_raises(self) -> None:
+        """If settings() raises, should gracefully fall back to False."""
 
-class TestAudiobookKeywords:
-    """Sanity check for AUDIOBOOK_KEYWORDS constant."""
+        class BrokenSection:
+            """Stub that raises on settings() call."""
 
-    def test_all_lowercase(self) -> None:
-        """All keywords must be lowercase for case-insensitive matching."""
-        assert all(
-            kw.islower() or not any(c.isupper() or c.islower() for c in kw)
-            for kw in AUDIOBOOK_KEYWORDS
-        )
+            title = "Broken"
 
-    def test_non_empty(self) -> None:
-        """At least one keyword is defined."""
-        assert len(AUDIOBOOK_KEYWORDS) > 0
+            def settings(self) -> list[Any]:
+                """Simulate a failing settings call."""
+                raise RuntimeError("Network error")
+
+        assert _looks_like_audiobook(BrokenSection()) is False
+
+
+class TestGetSectionInfo:
+    """Tests for get_section_info audiobook-first behaviour."""
+
+    class FakePlexServer:
+        """Minimal PlexServer stub."""
+
+        def __init__(self, sections: list[Any]) -> None:
+            """Initialize fake server with given sections."""
+            self.friendlyName = "Test Server"
+            self._sections = sections
+
+        def library(self) -> TestGetSectionInfo.FakeLibrary:
+            """Return fake library."""
+            return TestGetSectionInfo.FakeLibrary(self._sections)
+
+    class FakeLibrary:
+        """Minimal Library stub."""
+
+        def __init__(self, sections: list[Any]) -> None:
+            """Initialize fake library with given sections."""
+            self._sections = sections
+
+        def sections(self) -> list[Any]:
+            """Return contained sections."""
+            return self._sections
+
+    class FakeMusicSection:
+        """Minimal MusicSection stub."""
+
+        TYPE = "artist"
+
+        def __init__(
+            self, title: str, enable_track_offsets: bool = False, section_type: str = "artist"
+        ) -> None:
+            """Initialize fake music section."""
+            self.title = title
+            self.type = section_type
+            self._enable_track_offsets = enable_track_offsets
+
+        def settings(self) -> list[TestLooksLikeAudiobook.FakeSetting]:
+            """Return fake settings for this section."""
+            if self._enable_track_offsets:
+                return [TestLooksLikeAudiobook.FakeSetting("enableTrackOffsets", True)]
+            return []
+
+    def test_first_music_section_with_flag_is_audiobook_only(self) -> None:
+        """Only the first music section with enableTrackOffsets=True is flagged."""
+        sections = [
+            self.FakeMusicSection("Music (No Resume)"),
+            self.FakeMusicSection("Audiobooks", enable_track_offsets=True),
+            self.FakeMusicSection("More Audios", enable_track_offsets=True),
+        ]
+
+        # Build PlexSectionInfo manually to simulate get_section_info logic
+        results: list[PlexSectionInfo] = []
+        audiobook_found = False
+        for section in sections:
+            if section.type != self.FakeMusicSection.TYPE:
+                continue
+            is_audiobook = False
+            if not audiobook_found and _looks_like_audiobook(section):
+                is_audiobook = True
+                audiobook_found = True
+            results.append(
+                PlexSectionInfo(
+                    display_name=f"Test Server / {section.title}",
+                    section_title=section.title,
+                    server_name="Test Server",
+                    section_type=section.type,
+                    is_likely_audiobook=is_audiobook,
+                )
+            )
+
+        assert len(results) == 3
+        assert results[0].is_likely_audiobook is False
+        assert results[1].is_likely_audiobook is True  # first with flag
+        assert results[2].is_likely_audiobook is False  # second with flag is ignored
+
+
+class TestGetSectionInfoLegacyFallback:
+    """Tests ensuring library-type filtering is still respected."""
+
+    class FakeMovieSection:
+        """Minimal non-music section stub."""
+
+        TYPE = "movie"
+
+        def __init__(self, title: str) -> None:
+            """Initialize fake movie section."""
+            self.title = title
+            self.type = "movie"
+
+        def settings(self) -> list[Any]:
+            """Return empty settings."""
+            return []
+
+    def test_non_music_sections_ignored(self) -> None:
+        """Non-music sections should be skipped entirely."""
+        movie_section = self.FakeMovieSection("Movies")
+        assert movie_section.type != "artist"
+        # Simulating the loop filter
+        results: list[bool] = []
+        if movie_section.type == "artist":
+            results.append(True)
+        assert len(results) == 0

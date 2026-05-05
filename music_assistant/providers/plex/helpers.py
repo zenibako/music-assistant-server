@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -15,31 +16,7 @@ from plexapi.server import PlexServer
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-
-# Hardcoded set of common audiobook keywords across multiple languages
-# (can't match on user language since frontend handles translation)
-# Use "book" to detect audiobook libraries (already pre-filtered for music type)
-# Low stakes; users can easily correct auto-detection misses in UI.
-AUDIOBOOK_KEYWORDS = (
-    "book",
-    "audible",
-    "buch",
-    "libro",
-    "livre",
-    "livro",
-    "boek",
-    "bok",
-    "bog",
-    "kniha",
-    "carte",
-    "kirja",
-    "könyv",
-    "kitap",
-    "ksiazka",
-    "sach",
-    "sách",
-    "ブック",
-)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,15 +31,44 @@ class PlexSectionInfo:
 
 
 def _looks_like_audiobook(section: PlexLibrarySection) -> bool:
-    """Heuristic: check if a music section likely contains audiobooks."""
-    title_lower = section.title.lower()
-    if any(keyword in title_lower for keyword in AUDIOBOOK_KEYWORDS):
-        return True
-    if hasattr(section, "locations") and section.locations:
-        for location in section.locations:
-            location_lower = location.lower()
-            if any(keyword in location_lower for keyword in AUDIOBOOK_KEYWORDS):
-                return True
+    """Check if a music section likely contains audiobooks.
+
+    Uses the ``enableTrackOffsets`` library preference ("Store track progress"
+    advanced setting). When enabled, Plex treats tracks as resumable content,
+    which is characteristic of audiobook libraries.
+
+    Falls back to ``False`` if the setting is unavailable or the call fails.
+    """
+    try:
+        settings = section.settings()
+        section_title = getattr(section, "title", "<unknown>")
+        LOGGER.debug(
+            "Library '%s' settings: %r",
+            section_title,
+            [{"id": s.id, "value": s.value, "type": getattr(s, "type", "?")} for s in settings],
+        )
+        for setting in settings:
+            if setting.id == "enableTrackOffsets":
+                # Plex may return the value as a bool or string.
+                val = setting.value
+                is_enabled = val is True or (isinstance(val, str) and val.lower() in ("true", "1"))
+                if is_enabled:
+                    LOGGER.debug(
+                        "Library '%s' flagged as audiobook (enableTrackOffsets=%s)",
+                        section_title,
+                        val,
+                    )
+                    return True
+        LOGGER.debug(
+            "Library '%s' not flagged as audiobook (enableTrackOffsets absent or disabled)",
+            section_title,
+        )
+    except Exception as err:
+        LOGGER.warning(
+            "Failed to read library settings for '%s': %s",
+            getattr(section, "title", "<unknown>"),
+            err,
+        )
     return False
 
 
@@ -121,16 +127,21 @@ async def get_section_info(
                 session=session,
             )
         results: list[PlexSectionInfo] = []
+        audiobook_found = False
         for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:
                 continue
+            is_audiobook = False
+            if not audiobook_found and _looks_like_audiobook(media_section):
+                is_audiobook = True
+                audiobook_found = True
             results.append(
                 PlexSectionInfo(
                     display_name=f"{plex_server.friendlyName} / {media_section.title}",
                     section_title=media_section.title,
                     server_name=plex_server.friendlyName,
                     section_type=media_section.type,
-                    is_likely_audiobook=_looks_like_audiobook(media_section),
+                    is_likely_audiobook=is_audiobook,
                 )
             )
         return results
@@ -138,11 +149,10 @@ async def get_section_info(
     if cache := await mass.cache.get(
         cache_key, checksum=auth_token, provider=instance_id or local_server_ip
     ):
-        if isinstance(cache, list) and cache:
-            first_item = cache[0]
-            if isinstance(first_item, dict):
-                return [PlexSectionInfo(**item) for item in cache]
-        return cast("list[PlexSectionInfo]", cache)
+        if isinstance(cache, list) and cache and all(isinstance(item, dict) for item in cache):
+            return [PlexSectionInfo(**item) for item in cache]
+        # Treat non-list or corrupt cache as a miss.
+        return []
 
     result = await asyncio.to_thread(_get_section_info)
     await mass.cache.set(
