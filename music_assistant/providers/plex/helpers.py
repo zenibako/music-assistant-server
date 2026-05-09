@@ -36,8 +36,6 @@ def _looks_like_audiobook(section: PlexLibrarySection) -> bool:
     Uses the ``enableTrackOffsets`` library preference ("Store track progress"
     advanced setting). When enabled, Plex treats tracks as resumable content,
     which is characteristic of audiobook libraries.
-
-    Falls back to ``False`` if the setting is unavailable or the call fails.
     """
     try:
         settings = section.settings()
@@ -127,21 +125,16 @@ async def get_section_info(
                 session=session,
             )
         results: list[PlexSectionInfo] = []
-        audiobook_found = False
         for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:
                 continue
-            is_audiobook = False
-            if not audiobook_found and _looks_like_audiobook(media_section):
-                is_audiobook = True
-                audiobook_found = True
             results.append(
                 PlexSectionInfo(
                     display_name=f"{plex_server.friendlyName} / {media_section.title}",
                     section_title=media_section.title,
                     server_name=plex_server.friendlyName,
                     section_type=media_section.type,
-                    is_likely_audiobook=is_audiobook,
+                    is_likely_audiobook=_looks_like_audiobook(media_section),
                 )
             )
         return results
