@@ -159,8 +159,8 @@ class TestGetSectionInfo:
                 return [TestLooksLikeAudiobook.FakeSetting("enableTrackOffsets", True)]
             return []
 
-    def test_first_music_section_with_flag_is_audiobook_only(self) -> None:
-        """Only the first music section with enableTrackOffsets=True is flagged."""
+    def test_all_music_sections_with_flag_are_audiobooks(self) -> None:
+        """All music sections with enableTrackOffsets=True should be flagged."""
         sections = [
             self.FakeMusicSection("Music (No Resume)"),
             self.FakeMusicSection("Audiobooks", enable_track_offsets=True),
@@ -169,28 +169,23 @@ class TestGetSectionInfo:
 
         # Build PlexSectionInfo manually to simulate get_section_info logic
         results: list[PlexSectionInfo] = []
-        audiobook_found = False
         for section in sections:
             if section.type != self.FakeMusicSection.TYPE:
                 continue
-            is_audiobook = False
-            if not audiobook_found and _looks_like_audiobook(section):
-                is_audiobook = True
-                audiobook_found = True
             results.append(
                 PlexSectionInfo(
                     display_name=f"Test Server / {section.title}",
                     section_title=section.title,
                     server_name="Test Server",
                     section_type=section.type,
-                    is_likely_audiobook=is_audiobook,
+                    is_likely_audiobook=_looks_like_audiobook(section),
                 )
             )
 
         assert len(results) == 3
         assert results[0].is_likely_audiobook is False
-        assert results[1].is_likely_audiobook is True  # first with flag
-        assert results[2].is_likely_audiobook is False  # second with flag is ignored
+        assert results[1].is_likely_audiobook is True
+        assert results[2].is_likely_audiobook is True
 
 
 class TestGetSectionInfoLegacyFallback:
