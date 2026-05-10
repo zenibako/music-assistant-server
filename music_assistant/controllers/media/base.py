@@ -1165,6 +1165,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None,
     ) -> list[str] | None:
         """Ensure the provider filter respects the current user's provider filter."""
+        self.logger.debug(
+            "_ensure_provider_filter called with provider=%r", provider
+        )
+        # Treat empty strings / empty lists as "no filter" so the UI default works.
+        if not provider:
+            provider = None
         # Apply user provider filter if needed
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
@@ -1189,6 +1195,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         elif provider is not None:
             # No user filter - use the provided filter as is
             final_provider_filter = [provider] if isinstance(provider, str) else provider
+        self.logger.debug(
+            "_ensure_provider_filter result=%r (user_provider_filter=%r)",
+            final_provider_filter,
+            user_provider_filter,
+        )
         return final_provider_filter
 
     @final

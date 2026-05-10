@@ -99,6 +99,13 @@ LIBRARY_TYPE_MUSIC = "music"
 LIBRARY_TYPE_AUDIOBOOKS = "audiobooks"
 LIBRARY_TYPE_PODCASTS = "podcasts"
 
+UNKNOWN_NAME = "[Unknown]"
+PODCAST_PREFIX = "podcast:"
+PODCAST_EPISODE_PREFIX = "podcast_episode:"
+AUDIOBOOK_PREFIX = "audiobook:"
+CHAPTER_PREFIX = "Chapter"
+EPISODE_PREFIX = "Episode"
+
 CONF_LOCAL_SERVER_IP = "local_server_ip"
 CONF_LOCAL_SERVER_PORT = "local_server_port"
 CONF_LOCAL_SERVER_SSL = "local_server_ssl"
@@ -303,7 +310,7 @@ async def get_config_entries(  # noqa: PLR0915
 
         token = mass.config.decrypt_string(str(values.get(CONF_AUTH_TOKEN)))
         server_http_ip = str(values.get(CONF_LOCAL_SERVER_IP))
-        server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT))
+        server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT, 32400))
         server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
         server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
         sections = await get_section_info(
@@ -495,6 +502,17 @@ class PlexProvider(MusicProvider):
         """Return the configured library type, defaulting to music."""
         return str(self.config.get_value(CONF_LIBRARY_TYPE) or LIBRARY_TYPE_MUSIC)
 
+    @property
+    def instance_name_postfix(self) -> str | None:
+        """Return a postfix with the library name and type."""
+        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID) or ""))
+        library_type = self._get_library_type()
+        if library_type in (LIBRARY_TYPE_AUDIOBOOKS, LIBRARY_TYPE_PODCASTS):
+            return f"{library_name} - {library_type.title()}"
+        if library_name:
+            return library_name
+        return None
+
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
         # silence loggers
@@ -631,7 +649,7 @@ class PlexProvider(MusicProvider):
                 media_type,
                 key,
             )
-            name = "[Unknown]"
+            name = UNKNOWN_NAME
 
         mapped_name, mapped_version = parse_title_and_version(name)
 
@@ -642,7 +660,7 @@ class PlexProvider(MusicProvider):
                 key,
                 name,
             )
-            mapped_name = "[Unknown]"
+            mapped_name = UNKNOWN_NAME
         if not mapped_version and media_type not in (MediaType.ALBUM, MediaType.TRACK):
             mapped_version = ""
 
@@ -757,7 +775,7 @@ class PlexProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             provider=self.instance_id,
-            name=plex_album.title or "[Unknown]",
+            name=plex_album.title or UNKNOWN_NAME,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(album_id),
@@ -837,7 +855,7 @@ class PlexProvider(MusicProvider):
         playlist = Playlist(
             item_id=plex_playlist.key,
             provider=self.instance_id,
-            name=plex_playlist.title or "[Unknown]",
+            name=plex_playlist.title or UNKNOWN_NAME,
             provider_mappings={
                 ProviderMapping(
                     item_id=plex_playlist.key,
@@ -911,7 +929,7 @@ class PlexProvider(MusicProvider):
         track = Track(
             item_id=plex_track.key,
             provider=self.instance_id,
-            name=plex_track.title or "[Unknown]",
+            name=plex_track.title or UNKNOWN_NAME,
             provider_mappings={
                 ProviderMapping(
                     item_id=plex_track.key,
@@ -980,11 +998,11 @@ class PlexProvider(MusicProvider):
         self, plex_album: PlexAlbum, *, include_chapters: bool = False
     ) -> Audiobook:
         """Parse a Plex Album from the audiobook library into an Audiobook model."""
-        audiobook_id = f"audiobook:{plex_album.key}"
+        audiobook_id = f"{AUDIOBOOK_PREFIX}{plex_album.key}"
         audiobook = Audiobook(
             item_id=audiobook_id,
             provider=self.instance_id,
-            name=plex_album.title or "[Unknown]",
+            name=plex_album.title or UNKNOWN_NAME,
             provider_mappings={
                 ProviderMapping(
                     item_id=audiobook_id,
@@ -1041,7 +1059,7 @@ class PlexProvider(MusicProvider):
             chapters.append(
                 MediaItemChapter(
                     position=chapter_num,
-                    name=plex_track.title or f"Chapter {chapter_num}",
+                    name=plex_track.title or f"{CHAPTER_PREFIX} {chapter_num}",
                     start=cumulative,
                     end=cumulative + duration_s,
                 )
@@ -1053,11 +1071,11 @@ class PlexProvider(MusicProvider):
         self, plex_album: PlexAlbum, *, include_episodes: bool = False
     ) -> Podcast:
         """Parse a Plex Album from the podcast library into a Podcast model."""
-        podcast_id = f"podcast:{plex_album.key}"
+        podcast_id = f"{PODCAST_PREFIX}{plex_album.key}"
         podcast = Podcast(
             item_id=podcast_id,
             provider=self.instance_id,
-            name=plex_album.title or "[Unknown]",
+            name=plex_album.title or UNKNOWN_NAME,
             provider_mappings={
                 ProviderMapping(
                     item_id=podcast_id,
@@ -1106,20 +1124,20 @@ class PlexProvider(MusicProvider):
             episode_num += 1
             duration_s = (plex_track.duration or 0) / 1000.0
             episode = PodcastEpisode(
-                item_id=f"podcast_episode:{plex_track.key}",
+                item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
                 provider=self.instance_id,
-                name=plex_track.title or f"Episode {episode_num}",
+                name=plex_track.title or f"{EPISODE_PREFIX} {episode_num}",
                 position=episode_num,
                 duration=int(duration_s),
                 podcast=ItemMapping(
                     media_type=MediaType.PODCAST,
-                    item_id=f"podcast:{plex_album.key}",
+                    item_id=f"{PODCAST_PREFIX}{plex_album.key}",
                     provider=self.instance_id,
-                    name=plex_album.title or "[Unknown]",
+                    name=plex_album.title or UNKNOWN_NAME,
                 ),
                 provider_mappings={
                     ProviderMapping(
-                        item_id=f"podcast_episode:{plex_track.key}",
+                        item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
                         url=plex_track.getWebURL(self._baseurl),
@@ -1154,20 +1172,20 @@ class PlexProvider(MusicProvider):
         if plex_track.media and plex_track.media[0].container:
             content_type = ContentType.try_parse(plex_track.media[0].container)
         episode = PodcastEpisode(
-            item_id=f"podcast_episode:{plex_track.key}",
+            item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
             provider=self.instance_id,
-            name=plex_track.title or "[Unknown]",
+            name=plex_track.title or UNKNOWN_NAME,
             position=plex_track.trackNumber or 0,
             duration=int(duration_s),
             podcast=ItemMapping(
                 media_type=MediaType.PODCAST,
-                item_id=f"podcast:{plex_track.parentKey}",
+                item_id=f"{PODCAST_PREFIX}{plex_track.parentKey}",
                 provider=self.instance_id,
-                name=plex_track.parentTitle or "[Unknown]",
+                name=plex_track.parentTitle or UNKNOWN_NAME,
             ),
             provider_mappings={
                 ProviderMapping(
-                    item_id=f"podcast_episode:{plex_track.key}",
+                    item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=plex_track.getWebURL(self._baseurl),
@@ -1327,7 +1345,7 @@ class PlexProvider(MusicProvider):
         if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
             msg = "Audiobook library not configured"
             raise MediaNotFoundError(msg)
-        album_key = prov_audiobook_id.removeprefix("audiobook:")
+        album_key = prov_audiobook_id.removeprefix(AUDIOBOOK_PREFIX)
         try:
             plex_album = cast(
                 "PlexAlbum",
@@ -1364,7 +1382,7 @@ class PlexProvider(MusicProvider):
         if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
             msg = "Podcast library not configured"
             raise MediaNotFoundError(msg)
-        album_key = prov_podcast_id.removeprefix("podcast:")
+        album_key = prov_podcast_id.removeprefix(PODCAST_PREFIX)
         try:
             plex_album = cast(
                 "PlexAlbum",
@@ -1381,7 +1399,7 @@ class PlexProvider(MusicProvider):
         """Get all PodcastEpisodes for given podcast id."""
         if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
             return
-        album_key = prov_podcast_id.removeprefix("podcast:")
+        album_key = prov_podcast_id.removeprefix(PODCAST_PREFIX)
         try:
             plex_album = cast(
                 "PlexAlbum",
@@ -1399,7 +1417,7 @@ class PlexProvider(MusicProvider):
         if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
             msg = "Podcast library not configured"
             raise MediaNotFoundError(msg)
-        track_key = prov_episode_id.removeprefix("podcast_episode:")
+        track_key = prov_episode_id.removeprefix(PODCAST_EPISODE_PREFIX)
         try:
             plex_track = cast(
                 "PlexTrack",
@@ -1421,11 +1439,11 @@ class PlexProvider(MusicProvider):
         """
         library_type = self._get_library_type()
         if media_type == MediaType.AUDIOBOOK and library_type == LIBRARY_TYPE_AUDIOBOOKS:
-            album_key = item_id.removeprefix("audiobook:")
+            album_key = item_id.removeprefix(AUDIOBOOK_PREFIX)
         elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
-            album_key = item_id.removeprefix("podcast:")
+            album_key = item_id.removeprefix(PODCAST_PREFIX)
         elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
-            episode_key = item_id.removeprefix("podcast_episode:")
+            episode_key = item_id.removeprefix(PODCAST_EPISODE_PREFIX)
             plex_track = cast(
                 "PlexTrack",
                 await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
@@ -1504,11 +1522,11 @@ class PlexProvider(MusicProvider):
         """
         library_type = self._get_library_type()
         if media_type == MediaType.AUDIOBOOK and library_type == LIBRARY_TYPE_AUDIOBOOKS:
-            album_key = prov_item_id.removeprefix("audiobook:")
+            album_key = prov_item_id.removeprefix(AUDIOBOOK_PREFIX)
         elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
-            album_key = prov_item_id.removeprefix("podcast:")
+            album_key = prov_item_id.removeprefix(PODCAST_PREFIX)
         elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
-            episode_key = prov_item_id.removeprefix("podcast_episode:")
+            episode_key = prov_item_id.removeprefix(PODCAST_EPISODE_PREFIX)
             plex_track = cast(
                 "PlexTrack",
                 await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
@@ -1872,7 +1890,7 @@ class PlexProvider(MusicProvider):
         if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
             msg = "Library not configured for audiobooks"
             raise MediaNotFoundError(msg)
-        album_key = item_id.removeprefix("audiobook:")
+        album_key = item_id.removeprefix(AUDIOBOOK_PREFIX)
         try:
             plex_album = cast(
                 "PlexAlbum",
@@ -2026,7 +2044,7 @@ class PlexProvider(MusicProvider):
         if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
             msg = "Library not configured for podcasts"
             raise MediaNotFoundError(msg)
-        track_key = item_id.removeprefix("podcast_episode:")
+        track_key = item_id.removeprefix(PODCAST_EPISODE_PREFIX)
         try:
             plex_track = cast(
                 "PlexTrack",
