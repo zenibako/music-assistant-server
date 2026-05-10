@@ -2013,6 +2013,9 @@ class PlexProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            msg = f"Podcast episode {item_id} has no playable media parts"
+            raise MediaNotFoundError(msg)
         content_type = (
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )

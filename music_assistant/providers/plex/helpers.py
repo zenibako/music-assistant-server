@@ -144,8 +144,8 @@ async def get_section_info(
     ):
         if isinstance(cache, list) and cache and all(isinstance(item, dict) for item in cache):
             return [PlexSectionInfo(**item) for item in cache]
-        # Treat non-list or corrupt cache as a miss.
-        return []
+        # Treat non-list or corrupt cache as a miss; fall through to refetch.
+        LOGGER.debug("Discarding corrupt plex_section_info cache entry: %r", type(cache))
 
     result = await asyncio.to_thread(_get_section_info)
     await mass.cache.set(
