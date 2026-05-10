@@ -1077,9 +1077,13 @@ class PlexProvider(MusicProvider):
                 ]
             )
         if include_episodes:
-            episodes = await self._build_podcast_episodes(plex_album)
-            podcast.total_episodes = len(episodes)
+            podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast
+
+    async def _count_podcast_episodes(self, plex_album: PlexAlbum) -> int:
+        """Count playable tracks without building full PodcastEpisode objects."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        return sum(1 for t in plex_tracks if t.media and t.media[0].parts)
 
     async def _build_podcast_episodes(self, plex_album: PlexAlbum) -> list[PodcastEpisode]:
         """Build episode list from Plex tracks, skipping tracks without playable media."""
