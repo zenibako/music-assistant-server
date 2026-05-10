@@ -24,7 +24,11 @@ def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC) -> Any:
     mock_config.instance_id = "plex_instance_1"
 
     # Set up a proper dict-like values container so _get_library_type works
-    mock_config_values: dict[str, Any] = {"library_type": library_type, "log_level": "INFO"}
+    mock_config_values: dict[str, Any] = {
+        "library_type": library_type,
+        "log_level": "INFO",
+        "token": "local_auth",
+    }
 
     class MockValue:
         """Simple wrapper for mock config values."""
