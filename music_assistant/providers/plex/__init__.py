@@ -357,7 +357,7 @@ async def get_config_entries(  # noqa: PLR0915
                 default_library = ""
 
             conf_library_type.default_value = default_type
-            conf_library_type.value = default_type
+            conf_library_type.value = current_type
             conf_libraries.default_value = default_library
             conf_libraries.value = default_library
 
@@ -588,13 +588,22 @@ class PlexProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        features = set(self._supported_features)
         library_type = self._get_library_type()
         if library_type == LIBRARY_TYPE_AUDIOBOOKS:
-            features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
-        elif library_type == LIBRARY_TYPE_PODCASTS:
-            features.add(ProviderFeature.LIBRARY_PODCASTS)
-        return features
+            return {
+                ProviderFeature.LIBRARY_AUDIOBOOKS,
+                ProviderFeature.BROWSE,
+                ProviderFeature.SEARCH,
+                ProviderFeature.RECOMMENDATIONS,
+            }
+        if library_type == LIBRARY_TYPE_PODCASTS:
+            return {
+                ProviderFeature.LIBRARY_PODCASTS,
+                ProviderFeature.BROWSE,
+                ProviderFeature.SEARCH,
+                ProviderFeature.RECOMMENDATIONS,
+            }
+        return self._supported_features
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the full image URL including the auth token."""
@@ -1415,6 +1424,14 @@ class PlexProvider(MusicProvider):
             album_key = item_id.removeprefix("audiobook:")
         elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
             album_key = item_id.removeprefix("podcast:")
+        elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
+            episode_key = item_id.removeprefix("podcast_episode:")
+            plex_track = cast(
+                "PlexTrack",
+                await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
+            )
+            # Resume position lives on the parent album; delegate to it.
+            album_key = str(plex_track.parentKey)
         else:
             raise NotImplementedError
         try:
@@ -1490,6 +1507,13 @@ class PlexProvider(MusicProvider):
             album_key = prov_item_id.removeprefix("audiobook:")
         elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
             album_key = prov_item_id.removeprefix("podcast:")
+        elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
+            episode_key = prov_item_id.removeprefix("podcast_episode:")
+            plex_track = cast(
+                "PlexTrack",
+                await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
+            )
+            album_key = str(plex_track.parentKey)
         else:
             return
 
